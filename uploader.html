@@ -79,6 +79,9 @@ h1{font-size:30px;font-weight:800;letter-spacing:.02em}
 .seg{display:flex;background:#E9EAF2;border-radius:10px;padding:3px}
 .seg button{padding:5px 11px;font-size:13px;border-radius:8px;color:var(--muted);font-weight:600}
 .seg button.on{background:#fff;color:var(--accent);box-shadow:0 1px 3px rgba(30,30,60,.12)}
+.filter{display:inline-flex;margin-bottom:12px}
+.fontbox{padding:10px;text-align:center;font-size:26px;line-height:1.3;word-break:break-all;color:var(--ink)}
+.fontbox small{display:block;font-size:11.5px;color:var(--muted);margin-top:6px;font-family:inherit}
 .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
 @media(min-width:620px){.grid{grid-template-columns:repeat(3,1fr)}}
 @media(min-width:860px){.grid{grid-template-columns:repeat(4,1fr)}}
@@ -115,10 +118,10 @@ h1{font-size:30px;font-weight:800;letter-spacing:.02em}
   <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
   <b>点击选择文件，可一次多选</b>
   <small>也可以把文件拖到这里，或直接粘贴截图</small>
-  <small>支持 jpg png gif webp svg bmp ico，以及 mp3 wav m4a ogg flac aac</small>
-  <input type="file" id="fileInput" multiple accept="image/*,audio/*,.svg,.ico,.m4a,.flac,.aac">
+  <small>图片 jpg png gif webp svg，音频 mp3 wav m4a，字体 ttf otf woff woff2</small>
+  <input type="file" id="fileInput" multiple accept="image/*,audio/*,.svg,.ico,.m4a,.flac,.aac,.ttf,.otf,.woff,.woff2">
 </label>
-<label class="opts"><input type="checkbox" id="autoName" checked> 自动重命名（避免中文名和重名冲突）</label>
+<label class="opts"><input type="checkbox" id="autoName" checked> 自动重命名图片和音频（字体会保留原文件名）</label>
 
 <section class="card" id="queueCard">
   <div class="q-head">
@@ -136,9 +139,16 @@ h1{font-size:30px;font-weight:800;letter-spacing:.02em}
       <button data-f="url">链接</button>
       <button data-f="md">Markdown</button>
       <button data-f="html">HTML</button>
+      <button data-f="css">CSS</button>
     </div>
     <button class="btn plain" id="refresh">刷新</button>
   </div>
+</div>
+<div class="seg filter" id="filterSeg">
+  <button data-k="all" class="on">全部</button>
+  <button data-k="image">图片</button>
+  <button data-k="audio">音频</button>
+  <button data-k="font">字体</button>
 </div>
 <div class="grid" id="grid"></div>
 <p class="hint" style="text-align:center;margin-top:18px">刚上传的文件，外链通常要等 1 到 2 分钟才能打开。</p>
@@ -156,7 +166,9 @@ const GH_BRANCH = 'main';
 const PAGES = `https://${GH_USER}.github.io/${GH_REPO}/`;
 const IMG = ['jpg','jpeg','png','gif','webp','svg','bmp','ico','avif'];
 const AUD = ['mp3','wav','m4a','ogg','flac','aac'];
-const MAX_MB = 25;
+const FNT = ['ttf','otf','woff','woff2'];
+const FMT = {ttf:'truetype', otf:'opentype', woff:'woff', woff2:'woff2'};
+const maxMB = n => kind(n) === 'font' ? 50 : 25;
 
 const $ = s => document.querySelector(s);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -186,13 +198,24 @@ function toast(msg, err){
 }
 const esc = s => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ext  = n => (n.split('.').pop() || '').toLowerCase();
-const kind = n => IMG.includes(ext(n)) ? 'image' : AUD.includes(ext(n)) ? 'audio' : null;
+const kind = n => IMG.includes(ext(n)) ? 'image' : AUD.includes(ext(n)) ? 'audio' : FNT.includes(ext(n)) ? 'font' : null;
 const pageUrl = n => PAGES + encodeURIComponent(n);
 
 function linkText(name){
-  const u = pageUrl(name), img = kind(name) === 'image';
-  if(fmt === 'md')   return img ? `![${name}](${u})` : `[${name}](${u})`;
-  if(fmt === 'html') return img ? `<img src="${u}" alt="${name}">` : `<audio src="${u}" controls></audio>`;
+  const u = pageUrl(name), k = kind(name);
+  if(fmt === 'css'){
+    if(k === 'font'){
+      const fam = name.replace(/\.[^.]+$/, '');
+      return `@font-face {\n  font-family: '${fam}';\n  src: url('${u}') format('${FMT[ext(name)]}');\n  font-display: swap;\n}`;
+    }
+    return k === 'image' ? `url("${u}")` : u;
+  }
+  if(fmt === 'md')   return k === 'image' ? `![${name}](${u})` : `[${name}](${u})`;
+  if(fmt === 'html'){
+    if(k === 'image') return `<img src="${u}" alt="${name}">`;
+    if(k === 'audio') return `<audio src="${u}" controls></audio>`;
+    return `<link rel="preload" href="${u}" as="font" type="font/${ext(name)}" crossorigin>`;
+  }
   return u;
 }
 
@@ -283,25 +306,49 @@ async function loadGallery(){
     .map(f => ({ name:f.name, sha:f.sha, raw:f.download_url }));
   renderGallery();
 }
+let filterKind = 'all';
 function renderGallery(){
   files.sort((a,b) => b.name.localeCompare(a.name));   // 自动命名带时间，倒序即最新在前
-  $('#count').textContent = files.length ? `${files.length} 个文件` : '';
+  const list = files.filter(f => filterKind === 'all' || kind(f.name) === filterKind);
+  $('#count').textContent = files.length ? `${list.length} 个文件` : '';
   const grid = $('#grid');
-  if(!files.length){ grid.innerHTML = '<div class="empty">还没有文件，先上传一张吧</div>'; return; }
-  grid.innerHTML = files.map(f => {
-    const n = esc(f.name);
-    const media = kind(f.name) === 'image'
-      ? `<img loading="lazy" src="${pageUrl(f.name)}" data-raw="${esc(f.raw||'')}" alt="${n}" onerror="imgFallback(this)">`
-      : `<audio controls preload="none" src="${pageUrl(f.name)}"></audio>`;
+  if(!list.length){ grid.innerHTML = `<div class="empty">${files.length ? '这个分类下还没有文件' : '还没有文件，先上传一个吧'}</div>`; return; }
+  grid.innerHTML = list.map(f => {
+    const n = esc(f.name), k = kind(f.name);
+    let media, acts;
+    if(k === 'image'){
+      media = `<img loading="lazy" src="${pageUrl(f.name)}" data-raw="${esc(f.raw||'')}" alt="${n}" onerror="imgFallback(this)">`;
+    }else if(k === 'audio'){
+      media = `<audio controls preload="none" src="${pageUrl(f.name)}"></audio>`;
+    }else{
+      media = `<div class="fontbox"><span class="fs">Aa 字体 123</span><small>点预览查看效果</small></div>`;
+    }
+    acts = k === 'font'
+      ? `<button data-act="copy">复制</button><button data-act="preview">预览</button><button data-act="del" aria-label="删除">删除</button>`
+      : `<button data-act="copy">复制</button><button data-act="open">打开</button><button data-act="del" aria-label="删除">删除</button>`;
     return `<div class="tile" data-name="${n}">
       <div class="thumb">${media}</div>
       <div class="meta" title="${n}">${n}</div>
-      <div class="acts">
-        <button data-act="copy">复制</button>
-        <button data-act="open">打开</button>
-        <button data-act="del" aria-label="删除">删除</button>
-      </div></div>`;
+      <div class="acts">${acts}</div></div>`;
   }).join('');
+}
+async function previewFont(tile, name){
+  const f = files.find(x => x.name === name);
+  const btn = tile.querySelector('[data-act=preview]');
+  const fam = 'pv' + Math.random().toString(36).slice(2, 8);
+  btn.textContent = '加载中'; btn.disabled = true;
+  for(const url of [pageUrl(name), f && f.raw]){
+    if(!url) continue;
+    try{
+      const ff = new FontFace(fam, `url("${url}")`);
+      await ff.load(); document.fonts.add(ff);
+      tile.querySelector('.fs').style.fontFamily = `"${fam}"`;
+      tile.querySelector('.fontbox small').textContent = '预览中';
+      btn.textContent = '已预览'; return;
+    }catch(e){}
+  }
+  btn.textContent = '预览'; btn.disabled = false;
+  toast('预览失败，可能刚上传还没生效，稍后再试', true);
 }
 /* github.io 还没生效时，缩略图先用源文件地址顶一下 */
 function imgFallback(img){
@@ -314,6 +361,7 @@ $('#grid').addEventListener('click', async e => {
   const name = b.closest('.tile').dataset.name;
   if(b.dataset.act === 'copy') copyText(linkText(name));
   if(b.dataset.act === 'open') window.open(pageUrl(name), '_blank');
+  if(b.dataset.act === 'preview') previewFont(b.closest('.tile'), name);
   if(b.dataset.act === 'del'){
     if(!token){ toast('请先保存 Token', true); return; }
     if(!confirm(`确定删除 ${name} 吗？`)) return;
@@ -333,6 +381,12 @@ function setFmt(f){
 }
 $('#fmtSeg').addEventListener('click', e => { const b = e.target.closest('button'); if(b) setFmt(b.dataset.f); });
 setFmt(fmt);
+$('#filterSeg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if(!b) return;
+  filterKind = b.dataset.k;
+  document.querySelectorAll('#filterSeg button').forEach(x => x.classList.toggle('on', x === b));
+  renderGallery();
+});
 
 /* ---------- 上传 ---------- */
 const pad = n => String(n).padStart(2, '0');
@@ -361,7 +415,7 @@ async function handleFiles(list){
   if(!token){ toast('请先保存 Token', true); return; }
   const picked = [...list].filter(f => {
     if(!kind(f.name) && !/^(image|audio)\//.test(f.type)){ toast(`不支持：${f.name}`, true); return false; }
-    if(f.size > MAX_MB * 1024 * 1024){ toast(`${f.name} 超过 ${MAX_MB}MB，已跳过`, true); return false; }
+    if(f.size > maxMB(f.name) * 1024 * 1024){ toast(`${f.name} 超过 ${maxMB(f.name)}MB，已跳过`, true); return false; }
     return true;
   });
   if(!picked.length) return;
@@ -372,11 +426,11 @@ async function handleFiles(list){
   const q = $('#queue'); q.innerHTML = '';
 
   const items = picked.map(file => {
-    const name = $('#autoName').checked ? autoName(file) : safeName(file.name);
+    const name = ($('#autoName').checked && kind(file.name) !== 'font') ? autoName(file) : safeName(file.name);
     const el = document.createElement('div');
     el.className = 'q-item';
     const isImg = file.type.startsWith('image/');
-    el.innerHTML = `<div class="q-thumb">${isImg ? '' : '♪'}</div>
+    el.innerHTML = `<div class="q-thumb">${isImg ? '' : (kind(name) === 'font' ? 'Aa' : '♪')}</div>
       <div class="q-main"><div class="q-name">${esc(name)}</div><div class="q-bar"><i></i></div></div>
       <div class="q-st">等待中</div>`;
     if(isImg){
